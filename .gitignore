@@ -1,0 +1,5 @@
+build/
+
+config.json
+cache.json
+*.m3u
