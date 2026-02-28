@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 )
 
 func main() {
@@ -28,11 +29,12 @@ func main() {
 
 	m3u := getChannelList(channelData)
 
-	if err := os.WriteFile(cfg.Output, []byte(m3u), 0644); err != nil {
+	outputFile := filepath.Join(cfg.OutputDir, "iptv.m3u")
+	if err := os.WriteFile(outputFile, []byte(m3u), 0644); err != nil {
 		slog.Error("Failed to write output", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("Successfully wrote output", "file", cfg.Output)
+	slog.Info("Successfully wrote output", "file", outputFile)
 
 	if cfg.PushURL != "" {
 		resp, err := http.Get(cfg.PushURL)

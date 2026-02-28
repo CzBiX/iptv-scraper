@@ -22,7 +22,7 @@
 | `login_url` | String | IPTV 的登录认证 EPG 页面完整入口 URL。 |
 | `user_agent` | String | HTTP 请求所使用的 User-Agent，尽量模拟真实机顶盒发送的请求头。 |
 | `route_ip` | String | 路由器的 IP 地址，用于访问 rtp2httpd 服务。 |
-| `output` | String | 成功获取频道后，生成的 m3u 播放列表输出文件名称，例如 `"iptv.m3u"`。 |
+| `output_dir` | String | 成功获取频道后，生成文件的输出目录。 |
 | `iptv_ip_url` | String | (可选) 获取 IPTV IP 的 URL，如果未配置则使用默认值 `http://<route_ip>/cgi-bin/iptv`。 |
 | `push_url` | String | (可选) 健康检查或任务监控的回调推送 URL。程序执行成功时会向此地址发送 GET 请求 (如 Uptime Kuma)。 |
 
@@ -37,7 +37,7 @@
     "login_url": "http://1.2.3.4:8080/iptvepg/platform/index.jsp",
     "user_agent": "Mozilla/5.0 (Linux; Android 9; HG888-TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/999.11.22.3 Safari/537.36",
     "route_ip": "192.168.1.1",
-    "output": "iptv.m3u",
+    "output_dir": ".",
     "push_url": "https://uptime.example.com/api/push/your-secret-key"
 }
 ```

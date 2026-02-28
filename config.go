@@ -20,7 +20,7 @@ type Config struct {
 
 	RouteIP   string `json:"route_ip"`
 	IPTVIPURL string `json:"iptv_ip_url"`
-	Output    string `json:"output"`
+	OutputDir string `json:"output_dir"`
 
 	// optional, for healthcheck
 	PushURL string `json:"push_url"`
@@ -36,7 +36,7 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 	// Basic validation
-	if cfg.UserID == "" || cfg.Key == "" || cfg.StbID == "" || cfg.Mac == "" || cfg.LoginURL == "" || cfg.UserAgent == "" || cfg.RouteIP == "" || cfg.Output == "" {
+	if cfg.UserID == "" || cfg.Key == "" || cfg.StbID == "" || cfg.Mac == "" || cfg.LoginURL == "" || cfg.UserAgent == "" || cfg.RouteIP == "" || cfg.OutputDir == "" {
 		return nil, fmt.Errorf("missing required fields in config: %+v", cfg)
 	}
 	return &cfg, nil
