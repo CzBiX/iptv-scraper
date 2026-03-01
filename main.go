@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,34 +16,80 @@ func main() {
 	}
 
 	authClient := NewAuthClient(cfg)
-	baseURL, err := authClient.auth()
-	if err != nil {
+	if err := authClient.auth(); err != nil {
 		slog.Error("Auth failed", "err", err)
 		os.Exit(1)
 	}
 
-	channelData, err := authClient.getChannelData(baseURL)
+	channelData, err := authClient.getChannelData()
 	if err != nil {
 		slog.Error("Failed to get channel data", "err", err)
 		os.Exit(1)
 	}
 
-	m3u := getChannelList(channelData)
+	channels := getChannelList(channelData)
 
-	outputFile := filepath.Join(cfg.OutputDir, "iptv.m3u")
-	if err := os.WriteFile(outputFile, []byte(m3u), 0644); err != nil {
-		slog.Error("Failed to write output", "err", err)
+	data := buildM3U(channels, cfg.OutputURL)
+	if err := writeM3U(cfg.OutputDir, data); err != nil {
+		slog.Error("Failed to write m3u output", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("Successfully wrote output", "file", outputFile)
 
-	if cfg.PushURL != "" {
-		resp, err := http.Get(cfg.PushURL)
-		if err != nil {
-			slog.Error("Failed to push URL", "url", cfg.PushURL, "err", err)
-		} else {
-			resp.Body.Close()
-			slog.Info("Successfully pushed URL", "url", cfg.PushURL, "status", resp.Status)
-		}
+	epgData, err := fetchEPGData(channels, authClient)
+	if err != nil {
+		slog.Error("Failed to fetch epg data", "err", err)
+		os.Exit(1)
 	}
+
+	if err := writeEPG(cfg.OutputDir, epgData); err != nil {
+		slog.Error("Failed to write epg output", "err", err)
+		os.Exit(1)
+	}
+
+	notifyPushURL(cfg.PushURL)
+}
+
+func writeM3U(outputDir string, data []byte) error {
+	outputM3U := filepath.Join(outputDir, "iptv.m3u")
+
+	if err := os.WriteFile(outputM3U, data, 0644); err != nil {
+		return err
+	}
+
+	slog.Info("Successfully wrote m3u output", "file", outputM3U)
+	return nil
+}
+
+func writeEPG(outputDir string, data []byte) error {
+	outputEPG := filepath.Join(outputDir, "epg.xml.gz")
+
+	file, err := os.Create(outputEPG)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := gzip.NewWriter(file)
+	if _, err := writer.Write(data); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+
+	slog.Info("Successfully wrote epg output", "file", outputEPG)
+	return nil
+}
+
+func notifyPushURL(pushURL string) {
+	if pushURL == "" {
+		return
+	}
+	resp, err := http.Get(pushURL)
+	if err != nil {
+		slog.Error("Failed to push URL", "url", pushURL, "err", err)
+		return
+	}
+	resp.Body.Close()
+	slog.Info("Successfully pushed URL", "url", pushURL, "status", resp.Status)
 }

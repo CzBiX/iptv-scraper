@@ -10,16 +10,17 @@ import (
 	"strings"
 )
 
-const epgURL = "https://gh-proxy.org/https://github.com/mytv-android/myEPG/raw/refs/heads/master/output/epg.gz"
+const epgURL = "epg.xml.gz"
 
 var groupOrder = []string{"央视", "湖北", "卫视", "影视", "4K", "其他"}
 
 type Channel struct {
-	ChannelID    string
-	Name         string
-	URL          string
-	TimeShiftURL string
-	FCC          string
+	ChannelID     string
+	UserChannelID string
+	Name          string
+	URL           string
+	TimeShiftURL  string
+	FCC           string
 }
 
 func getGroup(name string) string {
@@ -63,18 +64,19 @@ func parseChannel(line string) Channel {
 	}
 
 	return Channel{
-		ChannelID:    attrs["UserChannelID"],
-		Name:         attrs["ChannelName"],
-		URL:          attrs["ChannelURL"],
-		TimeShiftURL: attrs["TimeShiftURL"],
-		FCC:          fcc,
+		ChannelID:     attrs["ChannelID"],
+		UserChannelID: attrs["UserChannelID"],
+		Name:          attrs["ChannelName"],
+		URL:           attrs["ChannelURL"],
+		TimeShiftURL:  attrs["TimeShiftURL"],
+		FCC:           fcc,
 	}
 }
 
-func buildM3U(channels []Channel) string {
+func buildM3U(channels []Channel, outputURL string) []byte {
 	sort.SliceStable(channels, func(i, j int) bool {
-		id1, _ := strconv.Atoi(channels[i].ChannelID)
-		id2, _ := strconv.Atoi(channels[j].ChannelID)
+		id1, _ := strconv.Atoi(channels[i].UserChannelID)
+		id2, _ := strconv.Atoi(channels[j].UserChannelID)
 		return id1 < id2
 	})
 
@@ -88,8 +90,15 @@ func buildM3U(channels []Channel) string {
 		groups[groupName] = append(groups[groupName], ch)
 	}
 
-	var buf bytes.Buffer
-	buf.WriteString(fmt.Sprintf("#EXTM3U x-tvg-url=\"%s\"\n\n", epgURL))
+	finalEpgURL := epgURL
+	if outputURL != "" {
+		outputURL = strings.TrimRight(outputURL, "/")
+		finalEpgURL = outputURL + "/" + epgURL
+	}
+
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "#EXTM3U x-tvg-url=\"%s\"\n\n", finalEpgURL)
+
 	count := 0
 
 	for _, key := range groupOrder {
@@ -108,7 +117,7 @@ func buildM3U(channels []Channel) string {
 			displayName := strings.TrimSuffix(ch.Name, "HD")
 
 			var attrs []string
-			attrs = append(attrs, fmt.Sprintf("tvg-id=\"%s\"", displayName))
+			attrs = append(attrs, fmt.Sprintf("tvg-id=\"%s\"", ch.ChannelID))
 			attrs = append(attrs, fmt.Sprintf("tvg-name=\"%s\"", displayName))
 			attrs = append(attrs, fmt.Sprintf("group-title=\"%s\"", key))
 
@@ -117,20 +126,21 @@ func buildM3U(channels []Channel) string {
 				attrs = append(attrs, fmt.Sprintf("catchup-source=\"%s&playseek={utc:YmdHMS}-{utcend:YmdHMS}\"", ch.TimeShiftURL))
 			}
 
-			buf.WriteString(fmt.Sprintf("#EXTINF:-1 %s,%s\n", strings.Join(attrs, " "), displayName))
-			buf.WriteString(fmt.Sprintf("%s%s\n", finalURL, fccArg))
+			fmt.Fprintf(&b, "#EXTINF:-1 %s,%s\n", strings.Join(attrs, " "), displayName)
+			fmt.Fprintf(&b, "%s%s\n", finalURL, fccArg)
 			count++
 		}
 	}
 
 	slog.Info("Channel parsing complete", "parsed", len(channels), "used", count)
-	return buf.String()
+	return b.Bytes()
 }
 
-func getChannelList(channels []string) string {
+func getChannelList(channels []string) []Channel {
 	var parsedChannels []Channel
 	for _, line := range channels {
 		parsedChannels = append(parsedChannels, parseChannel(line))
 	}
-	return buildM3U(parsedChannels)
+
+	return parsedChannels
 }

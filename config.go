@@ -23,7 +23,8 @@ type Config struct {
 	OutputDir string `json:"output_dir"`
 
 	// optional, for healthcheck
-	PushURL string `json:"push_url"`
+	PushURL   string `json:"push_url"`
+	OutputURL string `json:"output_url"`
 }
 
 func loadConfig() (*Config, error) {

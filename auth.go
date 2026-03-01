@@ -31,6 +31,9 @@ type CacheData struct {
 type AuthClient struct {
 	cfg    *Config
 	client *http.Client
+
+	jsessionID string
+	baseURL    *url.URL
 }
 
 func NewAuthClient(cfg *Config) *AuthClient {
@@ -125,45 +128,49 @@ func (c *AuthClient) proxy(targetURL string) string {
 	return fmt.Sprintf("http://%s:5140/%s", c.cfg.RouteIP, proxyURL)
 }
 
-func (c *AuthClient) auth() (*url.URL, error) {
+func (c *AuthClient) auth() error {
 	cached := c.loadCache()
 	if cached != nil {
 		baseURL, err := url.Parse(cached.BaseURL)
 		if err == nil {
 			slog.Info("Restored session from cache", "base_url", baseURL)
 			// Cookie must be attached to subsequent requests manually
-			return baseURL, nil
+			c.jsessionID = cached.JSessionID
+			c.baseURL = baseURL
+			return nil
 		}
 	}
 
 	// Full authentication flow
 	ctcToken, tokenURL, err := c.getCTCToken()
 	if err != nil {
-		return nil, fmt.Errorf("getCTCToken: %w", err)
+		return fmt.Errorf("getCTCToken: %w", err)
 	}
 
 	localIP, err := c.getIPTVIP()
 	if err != nil {
-		return nil, fmt.Errorf("getIPTVIP: %w", err)
+		return fmt.Errorf("getIPTVIP: %w", err)
 	}
 
 	authenticator, err := c.makeAuthenticator(localIP, ctcToken)
 	if err != nil {
-		return nil, fmt.Errorf("makeAuthenticator: %w", err)
+		return fmt.Errorf("makeAuthenticator: %w", err)
 	}
 
 	_, nextURL, err := c.getUserToken(authenticator, tokenURL)
 	if err != nil {
-		return nil, fmt.Errorf("getUserToken: %w", err)
+		return fmt.Errorf("getUserToken: %w", err)
 	}
 
 	jsessionID, baseURL, err := c.getSession(nextURL)
 	if err != nil {
-		return nil, fmt.Errorf("getSession: %w", err)
+		return fmt.Errorf("getSession: %w", err)
 	}
 
 	c.saveCache(baseURL, jsessionID)
-	return baseURL, nil
+	c.jsessionID = jsessionID
+	c.baseURL = baseURL
+	return nil
 }
 
 func (c *AuthClient) getCTCToken() (string, string, error) {
@@ -357,7 +364,7 @@ func (c *AuthClient) confirmAuth(loadBalancedURL string) (string, *url.URL, erro
 	}
 	// Strip query params
 	baseURL.RawQuery = ""
-	slog.Debug("Base URL", "url", baseURL.String())
+	slog.Info("Base URL", "url", baseURL.String())
 
 	postData := parseHiddenInputs(page)
 	formData := url.Values{}
@@ -391,8 +398,8 @@ func (c *AuthClient) confirmAuth(loadBalancedURL string) (string, *url.URL, erro
 	return jsessionID, baseURL, nil
 }
 
-func (c *AuthClient) getChannelData(baseURL *url.URL) ([]string, error) {
-	u := baseURL.ResolveReference(&url.URL{Path: "frameset_builder.jsp"}).String()
+func (c *AuthClient) getChannelData() ([]string, error) {
+	rel, _ := c.baseURL.Parse("frameset_builder.jsp")
 	data := url.Values{
 		"BUILD_ACTION":    {"FRAMESET_BUILDER"},
 		"NEED_UPDATE_STB": {"1"},
@@ -400,13 +407,9 @@ func (c *AuthClient) getChannelData(baseURL *url.URL) ([]string, error) {
 		"hdmistatus":      {"undefined"},
 	}
 
-	req, _ := http.NewRequest("POST", c.proxy(u), strings.NewReader(data.Encode()))
+	req, _ := http.NewRequest("POST", c.proxy(rel.String()), strings.NewReader(data.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	cached := c.loadCache()
-	if cached != nil && cached.JSessionID != "" {
-		req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: cached.JSessionID})
-	}
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: c.jsessionID})
 
 	resp, err := c.doReq(req)
 	if err != nil {
@@ -428,4 +431,39 @@ func (c *AuthClient) getChannelData(baseURL *url.URL) ([]string, error) {
 		channels = append(channels, m[1])
 	}
 	return channels, nil
+}
+
+func (c *AuthClient) getEPGData(channelID string, date string) ([]byte, error) {
+	reqURL, _ := c.baseURL.Parse("/iptvepg/frame226/publicPage/datajsp/prevueList.jsp")
+
+	q := reqURL.Query()
+	q.Set("isJson", "-1")
+	q.Set("isAjax", "1")
+	q.Set("fields", "1")
+	q.Set("channelID", channelID)
+	q.Set("pageIndex", "1")
+	q.Set("pageSize", "9999")
+	q.Set("curdate", date)
+	q.Set("isFristDate", "7")
+	reqURL.RawQuery = q.Encode()
+
+	req, _ := http.NewRequest("GET", c.proxy(reqURL.String()), nil)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: c.jsessionID})
+
+	resp, err := c.doReq(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	return body, nil
 }
