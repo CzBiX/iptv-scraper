@@ -43,6 +43,7 @@ func NewAuthClient(cfg *Config) *AuthClient {
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse // Don't auto-follow redirects, we handle them manually
 			},
+			Timeout: 10 * time.Second,
 		},
 	}
 }
@@ -323,7 +324,7 @@ func (c *AuthClient) getLoadBalancedURL(nextURL string) (string, error) {
 		return "", fmt.Errorf("extract EPGDomainForLogin: %w", err)
 	}
 	if loginURL != c.cfg.LoginURL {
-		slog.Warn("New Login URL", "url", loginURL)
+		return "", fmt.Errorf("New Login URL: %s", loginURL)
 	}
 
 	loadBalancedURL, err := extract(`location = '(.+?)'`, page)

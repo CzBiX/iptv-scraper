@@ -3,9 +3,11 @@ package main
 import (
 	"compress/gzip"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func main() {
@@ -14,6 +16,7 @@ func main() {
 		slog.Error("Failed to load config", "err", err)
 		os.Exit(1)
 	}
+	waitForRouter(cfg.RouteIP)
 
 	authClient := NewAuthClient(cfg)
 	if err := authClient.auth(); err != nil {
@@ -80,7 +83,6 @@ func writeEPG(outputDir string, data []byte) error {
 	slog.Info("Successfully wrote epg output", "file", outputEPG)
 	return nil
 }
-
 func notifyPushURL(pushURL string) {
 	if pushURL == "" {
 		return
@@ -92,4 +94,25 @@ func notifyPushURL(pushURL string) {
 	}
 	resp.Body.Close()
 	slog.Info("Successfully pushed URL", "url", pushURL, "status", resp.Status)
+}
+
+func waitForRouter(routeIP string) {
+	deadline := time.Now().Add(10 * time.Minute)
+	lastLogTime := time.Time{}
+	for {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(routeIP, "80"), 5*time.Second)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			slog.Error("Timeout waiting for router connectivity", "err", err)
+			os.Exit(1)
+		}
+		if time.Since(lastLogTime) >= 1*time.Minute {
+			slog.Info("Waiting for router connectivity...", "err", err)
+			lastLogTime = time.Now()
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
