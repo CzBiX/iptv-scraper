@@ -83,17 +83,25 @@ func writeEPG(outputDir string, data []byte) error {
 	slog.Info("Successfully wrote epg output", "file", outputEPG)
 	return nil
 }
+
 func notifyPushURL(pushURL string) {
 	if pushURL == "" {
 		return
 	}
-	resp, err := http.Get(pushURL)
-	if err != nil {
-		slog.Error("Failed to push URL", "url", pushURL, "err", err)
-		return
+
+	var err error
+	for i := range 3 {
+		resp, err := http.Get(pushURL)
+		if err == nil {
+			resp.Body.Close()
+			slog.Info("Successfully notified")
+			return
+		}
+
+		slog.Warn("Failed to push URL, retrying", "err", err, "attempt", i+1)
+		time.Sleep(2 * time.Second)
 	}
-	resp.Body.Close()
-	slog.Info("Successfully pushed URL", "url", pushURL, "status", resp.Status)
+	slog.Error("Failed to push URL after 3 attempts", "err", err)
 }
 
 func waitForRouter(routeIP string) {
