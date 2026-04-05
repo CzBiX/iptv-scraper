@@ -1,6 +1,5 @@
 build/
 
-config.json
-cache.json
+*.json
 *.m3u
 *.xml.gz
