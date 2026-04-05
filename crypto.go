@@ -20,10 +20,10 @@ func rightPad(s, char string, length int) string {
 }
 
 func desECBEncrypt(plaintext string, key string) (string, error) {
-	keyBytes := []byte(rightPad(key, "0", 8))
+	keyBytes := []byte(rightPad(key, "0", 24))
 	data := pkcs7Pad([]byte(plaintext), des.BlockSize)
 
-	block, err := des.NewCipher(keyBytes)
+	block, err := des.NewTripleDESCipher(keyBytes)
 	if err != nil {
 		return "", err
 	}
