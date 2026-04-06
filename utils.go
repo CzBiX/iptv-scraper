@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 )
 
@@ -14,12 +15,16 @@ func extract(pattern string, text string) (string, error) {
 	return matches[1], nil
 }
 
-func parseHiddenInputs(html string) map[string]string {
-	pairs := make(map[string]string)
-	re := regexp.MustCompile(`<input type="hidden" name="(.+?)" value="(.+?)">`)
+func findFormAction(html string) (string, error) {
+	return extract(`<form action="([^"]+)"`, html)
+}
+
+func parseHiddenInputs(html string) url.Values {
+	values := url.Values{}
+	re := regexp.MustCompile(`<input type="hidden" name="(.+?)" value="(.*?)">`)
 	matches := re.FindAllStringSubmatch(html, -1)
 	for _, m := range matches {
-		pairs[m[1]] = m[2]
+		values.Set(m[1], m[2])
 	}
-	return pairs
+	return values
 }

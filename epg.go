@@ -21,14 +21,14 @@ type XMLProgramme struct {
 	Title   string `xml:"title"`
 }
 
-type ChannelPrevueList struct {
-	List []Prevue `json:"channelPrevueList"`
+type ChannelProgramList struct {
+	List []Program `json:"result"`
 }
 
-type Prevue struct {
-	Title     string `json:"prevueName"`
-	StartTime string `json:"startTime"`
-	EndTime   string `json:"endTime"`
+type Program struct {
+	Title     string `json:"name"`
+	StartTime string `json:"time"`
+	EndTime   string `json:"endtime"`
 }
 
 func fetchEPGData(channels []Channel, authClient *AuthClient) ([]byte, error) {
@@ -57,16 +57,16 @@ func fetchEPGData(channels []Channel, authClient *AuthClient) ([]byte, error) {
 				continue
 			}
 
-			var channelPrevueList ChannelPrevueList
-			if err := json.Unmarshal(data, &channelPrevueList); err != nil {
+			var channelProgramList ChannelProgramList
+			if err := json.Unmarshal(data, &channelProgramList); err != nil {
 				slog.Error("Failed to unmarshal EPG data", "channel", ch.Name, "date", date, "err", err)
 				continue
 			}
 
-			for _, p := range channelPrevueList.List {
+			for _, p := range channelProgramList.List {
 				prog := XMLProgramme{
-					Start:   parseTimeToXMLTV(p.StartTime),
-					Stop:    parseTimeToXMLTV(p.EndTime),
+					Start:   parseTimeToXMLTV(date, p.StartTime),
+					Stop:    parseTimeToXMLTV(date, p.EndTime),
 					Channel: ch.ChannelID,
 					Title:   p.Title,
 				}
@@ -92,10 +92,8 @@ func buildEPGXML(programmes []XMLProgramme) ([]byte, error) {
 	return append([]byte(xml.Header), out...), nil
 }
 
-func parseTimeToXMLTV(t string) string {
-	// "2026.02.28 00:10:15" -> "20260228001015 +0800"
-	p := strings.ReplaceAll(t, ".", "")
-	p = strings.ReplaceAll(p, ":", "")
-	p = strings.ReplaceAll(p, " ", "")
-	return p + " +0800"
+func parseTimeToXMLTV(date, t string) string {
+	// "00:10:15" -> "20260228001015 +0800"
+	t = strings.ReplaceAll(t, ":", "")
+	return date + t + " +0800"
 }

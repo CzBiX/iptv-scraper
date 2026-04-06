@@ -42,3 +42,12 @@ func loadConfig() (*Config, error) {
 	}
 	return &cfg, nil
 }
+
+func (cfg *Config) mapping() map[string]any {
+	return map[string]any{
+		"user_id": cfg.UserID,
+		"key":     cfg.Key,
+		"stb_id":  cfg.StbID,
+		"mac":     cfg.Mac,
+	}
+}

@@ -12,9 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/transform"
 )
 
 const (
@@ -94,6 +91,12 @@ func (c *AuthClient) saveCache(baseURL *url.URL, jsessionID string) {
 	slog.Debug("Session cached", "file", cacheFile)
 }
 
+func buildFormPost(url string, data url.Values) *http.Request {
+	req, _ := http.NewRequest("POST", url, strings.NewReader(data.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return req
+}
+
 func (c *AuthClient) doReq(req *http.Request) (*http.Response, error) {
 	req.Header.Set("User-Agent", c.cfg.UserAgent)
 
@@ -158,14 +161,14 @@ func (c *AuthClient) auth() error {
 		return fmt.Errorf("makeAuthenticator: %w", err)
 	}
 
-	_, nextURL, err := c.getUserToken(authenticator, tokenURL)
+	jsessionID, err := c.getUserToken(authenticator, ctcToken, tokenURL)
 	if err != nil {
-		return fmt.Errorf("getUserToken: %w", err)
+		return fmt.Errorf("jsessionID: %w", err)
 	}
 
-	jsessionID, baseURL, err := c.getSession(nextURL)
+	baseURL, err := url.Parse(tokenURL)
 	if err != nil {
-		return fmt.Errorf("getSession: %w", err)
+		return fmt.Errorf("failed to parse base URL: %w", err)
 	}
 
 	c.saveCache(baseURL, jsessionID)
@@ -174,32 +177,90 @@ func (c *AuthClient) auth() error {
 	return nil
 }
 
+func (c *AuthClient) getTemplateString(tmplStr string) string {
+	configMap := c.cfg.mapping()
+	return os.Expand(tmplStr, func(key string) string {
+		if val, ok := configMap[key]; ok {
+			return fmt.Sprintf("%v", val)
+		}
+		return ""
+	})
+}
+
+func buildRelativeURL(base, path string) string {
+	baseURL, _ := url.Parse(base)
+
+	path = "./" + strings.TrimLeft(path, "/")
+	return baseURL.ResolveReference(&url.URL{Path: path}).String()
+}
+
 func (c *AuthClient) getCTCToken() (string, string, error) {
-	u := c.proxy(fmt.Sprintf("%s?UserID=%s&Action=Login", c.cfg.LoginURL, c.cfg.UserID))
-	req, _ := http.NewRequest("GET", u, nil)
-	resp, err := c.doReq(req)
-	if err != nil {
-		return "", "", err
+	loginUrl := c.getTemplateString(c.cfg.LoginURL)
+	slog.Debug("Login URL", "url", loginUrl)
+
+	req, _ := http.NewRequest("GET", c.proxy(loginUrl), nil)
+	formPosted := false
+	page := ""
+	redirectTimes := 0
+
+	for redirectTimes < 2 {
+		resp, err := c.doReq(req)
+		if err != nil {
+			return "", "", err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusFound {
+			jumpUrl := resp.Header.Get("Location")
+			loginUrl, _ = strings.CutPrefix(jumpUrl, "/http/")
+			loginUrl = "http://" + loginUrl
+
+			req, _ = http.NewRequest("GET", c.proxy(loginUrl), nil)
+			redirectTimes++
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			return "", "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		page = string(body)
+
+		// some login pages have an extra form step, if we find a form action, we need to submit it before we can get the token
+		actionURL, err := findFormAction(page)
+		if err != nil {
+			// No form found, assume it's the token page
+			break
+		}
+
+		if formPosted {
+			break
+		}
+		formPosted = true
+
+		slashIndex := strings.LastIndex(loginUrl, "/")
+		actionURL = loginUrl[:slashIndex+1] + actionURL
+
+		formData := parseHiddenInputs(page)
+		req = buildFormPost(c.proxy(actionURL), formData)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	if redirectTimes >= 2 {
+		return "", "", fmt.Errorf("Too many redirects, possible redirect loop")
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	page := string(body)
-
-	token, err := extract(`CTCGetAuthInfo\('(.+?)'\)`, page)
+	token, err := extract(`EncryptToken = "(.+?)"`, page)
 	if err != nil {
 		return "", "", err
 	}
 	slog.Debug("CTCGetAuthInfo", "token", token)
 
-	tokenURL, err := extract(`action="(.+?)"`, page)
+	tokenURL, err := findFormAction(page)
 	if err != nil {
 		return "", "", err
 	}
+	tokenURL = buildRelativeURL(loginUrl, tokenURL)
 	slog.Debug("Token URL", "url", tokenURL)
 
 	return token, tokenURL, nil
@@ -242,21 +303,39 @@ func (c *AuthClient) makeAuthenticator(localIP, ctcToken string) (string, error)
 	return authenticator, nil
 }
 
-func (c *AuthClient) getUserToken(authenticator, tokenURL string) (string, string, error) {
+func (c *AuthClient) getUserToken(authenticator, ctcToken, tokenURL string) (string, error) {
 	data := url.Values{}
 	data.Set("UserID", c.cfg.UserID)
+	data.Set("Lang", "0")
+	data.Set("SupportHD", "1")
+	data.Set("NetUserID", fmt.Sprintf("tv%s@itv", c.cfg.UserID))
 	data.Set("Authenticator", authenticator)
+	data.Set("STBType", "B860AV1.1-T2")
+	data.Set("STBVersion", "V81511329.1012")
+	data.Set("conntype", "ipoe")
+	data.Set("STBID", c.cfg.StbID)
+	data.Set("templateName", "")
+	data.Set("areaId", "")
+	data.Set("userToken", ctcToken)
+	data.Set("userGroupId", "")
+	data.Set("productPackageId", "-1")
+	data.Set("mac", c.cfg.Mac)
+	data.Set("UserField", "0")
+	data.Set("SoftwareVersion", "V81511329.1012")
+	data.Set("IsSmartStb", "0")
+	data.Set("desktopId", "")
+	data.Set("stbmaker", "")
+	data.Set("VIP", "")
 
-	req, _ := http.NewRequest("POST", c.proxy(tokenURL), strings.NewReader(data.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req := buildFormPost(c.proxy(tokenURL), data)
 	resp, err := c.doReq(req)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	body, _ := io.ReadAll(resp.Body)
@@ -264,91 +343,10 @@ func (c *AuthClient) getUserToken(authenticator, tokenURL string) (string, strin
 
 	token, _ := extract(`'UserToken','(.+?)'`, page) // Might be optional based on original code 'if not token'
 	if token == "" {
-		return "", "", fmt.Errorf("Failed to obtain UserToken")
+		return "", fmt.Errorf("Failed to obtain UserToken")
 	}
 
 	slog.Debug("UserToken", "token", token)
-
-	nextURL, err := extract(`location='(.+?)'`, page)
-	if err != nil {
-		return "", "", err
-	}
-	slog.Debug("Next URL", "url", nextURL)
-
-	return token, nextURL, nil
-}
-
-func (c *AuthClient) getSession(nextURL string) (string, *url.URL, error) {
-	loadBalancedURL, err := c.getLoadBalancedURL(nextURL)
-	if err != nil {
-		return "", nil, err
-	}
-	return c.confirmAuth(loadBalancedURL)
-}
-
-func (c *AuthClient) getLoadBalancedURL(nextURL string) (string, error) {
-	nextURL = strings.Replace(nextURL, "GetChannelList", "GetServiceEntry", 1)
-
-	req, _ := http.NewRequest("GET", c.proxy(nextURL), nil)
-	resp, err := c.doReq(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	page := string(body)
-
-	nextURL, err = extract(`location='(.+?)'`, page)
-	if err != nil {
-		return "", fmt.Errorf("extract UserGroupNMB URL: %w", err)
-	}
-
-	req, _ = http.NewRequest("GET", c.proxy(nextURL), nil)
-	resp, err = c.doReq(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	body, _ = io.ReadAll(resp.Body)
-	page = string(body)
-
-	loginURL, err := extract(`'EPGDomainForLogin', '(.+?)'`, page)
-	if err != nil {
-		return "", fmt.Errorf("extract EPGDomainForLogin: %w", err)
-	}
-	if loginURL != c.cfg.LoginURL {
-		return "", fmt.Errorf("New Login URL: %s", loginURL)
-	}
-
-	loadBalancedURL, err := extract(`location = '(.+?)'`, page)
-	if err != nil {
-		return "", fmt.Errorf("extract load-balanced URL: %w", err)
-	}
-	slog.Debug("Load-balanced URL", "url", loadBalancedURL)
-
-	return loadBalancedURL, nil
-}
-
-func (c *AuthClient) confirmAuth(loadBalancedURL string) (string, *url.URL, error) {
-	req, _ := http.NewRequest("GET", c.proxy(loadBalancedURL), nil)
-	resp, err := c.doReq(req)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 && resp.StatusCode != 302 { // It might redirect
-		return "", nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	page := string(body)
 
 	var jsessionID string
 	for _, cookie := range resp.Cookies() {
@@ -359,57 +357,16 @@ func (c *AuthClient) confirmAuth(loadBalancedURL string) (string, *url.URL, erro
 	}
 	slog.Info("JSESSIONID", "jsessionid", jsessionID)
 
-	baseURL, err := url.Parse(loadBalancedURL)
-	if err != nil {
-		return "", nil, err
-	}
-	// Strip query params
-	baseURL.RawQuery = ""
-	slog.Info("Base URL", "url", baseURL.String())
-
-	postData := parseHiddenInputs(page)
-	formData := url.Values{}
-	for k, v := range postData {
-		formData.Set(k, v)
-	}
-
-	u := baseURL.ResolveReference(&url.URL{Path: "funcportalauth.jsp"}).String()
-	req, _ = http.NewRequest("POST", c.proxy(u), strings.NewReader(formData.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if jsessionID != "" {
-		req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: jsessionID})
-	}
-
-	resp, err = c.doReq(req)
-	if err != nil {
-		return "", nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return "", nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	body, _ = io.ReadAll(resp.Body)
-	page = string(body)
-
-	if !strings.Contains(page, jsessionID) {
-		return "", nil, fmt.Errorf("Failed to auth: JSESSIONID not found in response")
-	}
-
-	return jsessionID, baseURL, nil
+	return jsessionID, nil
 }
 
 func (c *AuthClient) getChannelData() ([]string, error) {
-	rel, _ := c.baseURL.Parse("frameset_builder.jsp")
-	data := url.Values{
-		"BUILD_ACTION":    {"FRAMESET_BUILDER"},
-		"NEED_UPDATE_STB": {"1"},
-		"MAIN_WIN_SRC":    {"/iptvepg/frame226/portal.jsp"},
-		"hdmistatus":      {"undefined"},
-	}
+	rel, _ := c.baseURL.Parse("/EPG/jsp/getchannellistHWCTC.jsp")
+	data := url.Values{}
+	data.Set("SupportHD", "1")
+	data.Set("Lang", "1")
 
-	req, _ := http.NewRequest("POST", c.proxy(rel.String()), strings.NewReader(data.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req := buildFormPost(c.proxy(rel.String()), data)
 	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: c.jsessionID})
 
 	resp, err := c.doReq(req)
@@ -421,11 +378,10 @@ func (c *AuthClient) getChannelData() ([]string, error) {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	reader := transform.NewReader(resp.Body, simplifiedchinese.GBK.NewDecoder())
-	body, _ := io.ReadAll(reader)
+	body, _ := io.ReadAll(resp.Body)
 	page := string(body)
 
-	re := regexp.MustCompile(`jsSetConfig\('Channel','(.+?)'\);`)
+	re := regexp.MustCompile(`CTCSetConfig\('Channel','(.+?)'\);`)
 	matches := re.FindAllStringSubmatch(page, -1)
 	var channels []string
 	for _, m := range matches {
@@ -435,18 +391,7 @@ func (c *AuthClient) getChannelData() ([]string, error) {
 }
 
 func (c *AuthClient) getEPGData(channelID string, date string) ([]byte, error) {
-	reqURL, _ := c.baseURL.Parse("/iptvepg/frame226/publicPage/datajsp/prevueList.jsp")
-
-	q := reqURL.Query()
-	q.Set("isJson", "-1")
-	q.Set("isAjax", "1")
-	q.Set("fields", "1")
-	q.Set("channelID", channelID)
-	q.Set("pageIndex", "1")
-	q.Set("pageSize", "9999")
-	q.Set("curdate", date)
-	q.Set("isFristDate", "7")
-	reqURL.RawQuery = q.Encode()
+	reqURL, _ := c.baseURL.Parse(fmt.Sprintf("/EPG/jsp/gdhdpublic/Ver.3/common/data.jsp?Action=channelProgramList&channelId=%s&date=%s", channelID, date))
 
 	req, _ := http.NewRequest("GET", c.proxy(reqURL.String()), nil)
 	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: c.jsessionID})

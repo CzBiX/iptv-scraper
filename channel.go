@@ -59,8 +59,13 @@ func parseChannel(line string) Channel {
 	}
 
 	var fcc string
-	if attrs["FCCEnable"] == "1" {
+	if attrs["FCCEnable"] != "0" {
 		fcc = fmt.Sprintf("%s:%s", attrs["ChannelFCCIP"], attrs["ChannelFCCPort"])
+	}
+
+	var timeShiftURL string
+	if attrs["TimeShift"] != "0" {
+		timeShiftURL = attrs["TimeShiftURL"]
 	}
 
 	return Channel{
@@ -68,7 +73,7 @@ func parseChannel(line string) Channel {
 		UserChannelID: attrs["UserChannelID"],
 		Name:          attrs["ChannelName"],
 		URL:           attrs["ChannelURL"],
-		TimeShiftURL:  attrs["TimeShiftURL"],
+		TimeShiftURL:  timeShiftURL,
 		FCC:           fcc,
 	}
 }
@@ -109,6 +114,7 @@ func buildM3U(channels []Channel, outputURL string) []byte {
 			}
 
 			finalURL := strings.Replace(ch.URL, "igmp://", "rtp://", 1)
+			finalURL = strings.SplitN(finalURL, "|", 2)[0]
 			fccArg := ""
 			if ch.FCC != "" {
 				fccArg = "?fcc=" + ch.FCC
@@ -123,7 +129,7 @@ func buildM3U(channels []Channel, outputURL string) []byte {
 
 			if ch.TimeShiftURL != "" {
 				attrs = append(attrs, "catchup=\"default\"")
-				attrs = append(attrs, fmt.Sprintf("catchup-source=\"%s&playseek={utc:YmdHMS}-{utcend:YmdHMS}\"", ch.TimeShiftURL))
+				attrs = append(attrs, fmt.Sprintf("catchup-source=\"%s&playseek={(b)YmdHMS}-{(e)YmdHMS}\"", ch.TimeShiftURL))
 			}
 
 			fmt.Fprintf(&b, "#EXTINF:-1 %s,%s\n", strings.Join(attrs, " "), displayName)
